@@ -1,6 +1,6 @@
 {
   "name": "@marciorvneto/texpipe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A lightweight LaTeX to AST parser with adapters for DOCX and MathML",
   "license": "MIT",
   "author": "Marcio R. V. Neto",
