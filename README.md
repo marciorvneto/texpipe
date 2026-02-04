@@ -78,7 +78,7 @@ console.log(JSON.stringify(ast, null, 2));
 
 ## ⚠️ Current Status
 
-**This project is in early Alpha (v0.2.0).**
+**This project is in early Alpha.**
 
 It currently supports:
 
