@@ -1,35 +1,42 @@
 {
   "name": "@marciorvneto/texpipe",
-  "author": "marciorvneto@gmail.com",
   "version": "0.1.0",
-  "description": "LaTeX -> AST with adapter-friendly output pipelines",
+  "description": "A lightweight LaTeX to AST parser with adapters for DOCX and MathML",
   "license": "MIT",
-  "type": "module",
+  "author": "Marcio R. V. Neto",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marciorvneto/texpipe"
+  },
+  "keywords": [
+    "latex",
+    "parser",
+    "ast",
+    "docx",
+    "math",
+    "mathml"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc",
     "test": "jest",
-    "test:watch": "jest --watch",
-    "clean": "rm -rf dist"
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "docx": "^8.0.0"
   },
   "devDependencies": {
+    "docx": "^8.0.0",
     "@types/jest": "^29.5.14",
-    "jest": "^29.0.0",
-    "ts-jest": "^29.4.6",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.0.0"
-  },
-  "dependencies": {
-    "docx": "^9.5.1"
+    "typescript": "^5.3.3"
   }
 }

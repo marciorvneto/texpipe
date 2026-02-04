@@ -1,1 +1,1 @@
-console.log("Hello");
+export { DocxAdapter } from "./adapters/docx";
