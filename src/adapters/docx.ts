@@ -1,5 +1,11 @@
 import { MathNode } from "../core/ast";
 import { LatexParser } from "../core/parser";
+import {
+  FUNCTIONS,
+  LARGE_OPERATORS,
+  resolveSymbol,
+  SPACING,
+} from "../core/symbols";
 import type * as DocxLib from "docx";
 
 export class DocxAdapter {
@@ -9,7 +15,6 @@ export class DocxAdapter {
     this.docx = docxLibrary;
   }
 
-  // Main entry point
   public toParagraph(latex: string) {
     return new this.docx.Paragraph({
       children: [this.toMath(latex)],
@@ -26,132 +31,239 @@ export class DocxAdapter {
     });
   }
 
-  // Recursive visitor
-  private visit(node: MathNode): any {
+  private asArray(node: unknown): any[] {
+    if (node == null) return [];
+    return (Array.isArray(node) ? node : [node]).flat();
+  }
+
+  /** Upright math run (`m:nor`) so units and function names are not italic. */
+  private romanRun(text: string): any {
+    const Xml = (this.docx as any).XmlComponent;
+    const Empty = (this.docx as any).EmptyElement;
+    if (!Xml || !Empty) {
+      return new this.docx.MathRun(text);
+    }
+    const rPr = new Xml("m:rPr");
+    rPr.addChildElement(new Empty("m:nor"));
+    const t = new Xml("m:t");
+    t.addChildElement(text);
+    const r = new Xml("m:r");
+    r.addChildElement(rPr);
+    r.addChildElement(t);
+    return r;
+  }
+
+  private run(text: string, roman: boolean): any {
+    return roman ? this.romanRun(text) : new this.docx.MathRun(text);
+  }
+
+  private visit(node: MathNode, roman = false): any {
     switch (node.type) {
       case "root":
       case "group":
-        return (node.children || []).map((child) => this.visit(child)).flat();
+        return (node.children || []).map((child) => this.visit(child, roman)).flat();
+
       case "text":
-        return new this.docx.MathRun(node.value || "");
+        return this.run(node.value || "", roman);
+
       case "symbol":
       case "operator":
-        return this.mapSymbol(node.value || "");
+        return this.mapSymbol(node.value || "", roman);
+
+      case "space":
+        return this.run(SPACING[node.value || ""] ?? " ", roman);
+
+      case "textmode":
+        return (node.children || [])
+          .map((child) => this.visit(child, node.style !== "italic"))
+          .flat();
+
       case "fraction":
         return new this.docx.MathFraction({
-          numerator: [this.visit(node.numerator!)].flat(),
-          denominator: [this.visit(node.denominator!)].flat(),
+          numerator: this.asArray(this.visit(node.numerator!, roman)),
+          denominator: this.asArray(this.visit(node.denominator!, roman)),
         });
+
+      case "scripts":
+        return new this.docx.MathSubSuperScript({
+          children: this.asArray(this.visit(node.base!, roman)),
+          subScript: this.asArray(this.visit(node.sub!, roman)),
+          superScript: this.asArray(this.visit(node.sup!, roman)),
+        });
+
       case "subscript":
+        if (node.base?.type === "superscript") {
+          return new this.docx.MathSubSuperScript({
+            children: this.asArray(this.visit(node.base.base!, roman)),
+            subScript: this.asArray(this.visit(node.sub!, roman)),
+            superScript: this.asArray(this.visit(node.base.sup!, roman)),
+          });
+        }
         return new this.docx.MathSubScript({
-          children: [this.visit(node.base!)].flat(),
-          subScript: [this.visit(node.sub!)].flat(),
+          children: this.asArray(this.visit(node.base!, roman)),
+          subScript: this.asArray(this.visit(node.sub!, roman)),
         });
+
       case "superscript":
+        if (node.base?.type === "subscript") {
+          return new this.docx.MathSubSuperScript({
+            children: this.asArray(this.visit(node.base.base!, roman)),
+            subScript: this.asArray(this.visit(node.base.sub!, roman)),
+            superScript: this.asArray(this.visit(node.sup!, roman)),
+          });
+        }
         return new this.docx.MathSuperScript({
-          children: [this.visit(node.base!)].flat(),
-          superScript: [this.visit(node.sup!)].flat(),
+          children: this.asArray(this.visit(node.base!, roman)),
+          superScript: this.asArray(this.visit(node.sup!, roman)),
         });
+
+      case "radical":
+        return new this.docx.MathRadical({
+          children: this.asArray(this.visit(node.radicand!, roman)),
+          degree: node.index
+            ? this.asArray(this.visit(node.index, roman))
+            : undefined,
+        });
+
+      case "delimited":
+        return this.visitDelimited(node, roman);
+
+      case "function":
+        return this.visitFunction(node);
+
+      case "nary":
+        return this.visitNary(node, roman);
+
       default:
         return new this.docx.MathRun("");
     }
   }
 
-  private mapSymbol(latexCmd: string): any {
-    // Basic stripping of backslash if it's just a char like "x"
+  private scriptedName(nameRuns: any[], node: MathNode): any[] {
+    if (node.sub && node.sup) {
+      return [
+        new this.docx.MathSubSuperScript({
+          children: nameRuns,
+          subScript: this.asArray(this.visit(node.sub)),
+          superScript: this.asArray(this.visit(node.sup)),
+        }),
+      ];
+    }
+    if (node.sub) {
+      return [
+        new this.docx.MathSubScript({
+          children: nameRuns,
+          subScript: this.asArray(this.visit(node.sub)),
+        }),
+      ];
+    }
+    if (node.sup) {
+      return [
+        new this.docx.MathSuperScript({
+          children: nameRuns,
+          superScript: this.asArray(this.visit(node.sup)),
+        }),
+      ];
+    }
+    return nameRuns;
+  }
+
+  private visitFunction(node: MathNode): any {
+    const label = FUNCTIONS[node.value || ""] ?? (node.value || "").replace("\\", "");
+    const nameRuns = this.scriptedName([this.romanRun(label)], node);
+    const arg = node.children?.[0];
+    if (!arg || !(this.docx as any).MathFunction) {
+      const out = [...nameRuns];
+      if (arg) out.push(...this.asArray(this.visit(arg)));
+      return out.length === 1 ? out[0] : out;
+    }
+    return new this.docx.MathFunction({
+      name: nameRuns,
+      children: this.asArray(this.visit(arg)),
+    });
+  }
+
+  private visitNary(node: MathNode, roman: boolean): any {
+    const op = node.value || "";
+    const body = node.body
+      ? this.asArray(this.visit(node.body, roman))
+      : [new this.docx.MathRun("")];
+    const sub = node.sub ? this.asArray(this.visit(node.sub, roman)) : undefined;
+    const sup = node.sup ? this.asArray(this.visit(node.sup, roman)) : undefined;
+
+    if (op === "\\int" && (this.docx as any).MathIntegral) {
+      return new this.docx.MathIntegral({
+        children: body,
+        subScript: sub,
+        superScript: sup,
+      });
+    }
+    if (op === "\\sum" && (this.docx as any).MathSum) {
+      return new this.docx.MathSum({
+        children: body,
+        subScript: sub,
+        superScript: sup,
+      });
+    }
+
+    let glyph: any = this.run(LARGE_OPERATORS[op] ?? op.replace("\\", ""), roman);
+    if (sub && sup) {
+      glyph = new this.docx.MathSubSuperScript({
+        children: this.asArray(glyph),
+        subScript: sub,
+        superScript: sup,
+      });
+    } else if (sub) {
+      glyph = new this.docx.MathSubScript({
+        children: this.asArray(glyph),
+        subScript: sub,
+      });
+    } else if (sup) {
+      glyph = new this.docx.MathSuperScript({
+        children: this.asArray(glyph),
+        superScript: sup,
+      });
+    }
+    return node.body ? [glyph, ...body] : glyph;
+  }
+
+  private visitDelimited(node: MathNode, roman: boolean): any {
+    const children = (node.children || [])
+      .map((child) => this.visit(child, roman))
+      .flat();
+    const left = node.left || "";
+    const right = node.right || "";
+
+    if (left === "(" && right === ")") {
+      return new this.docx.MathRoundBrackets({ children });
+    }
+    if (left === "[" && right === "]") {
+      return new this.docx.MathSquareBrackets({ children });
+    }
+    if (left === "{" && right === "}") {
+      return new this.docx.MathCurlyBrackets({ children });
+    }
+    if (left === "⟨" && right === "⟩") {
+      return new this.docx.MathAngledBrackets({ children });
+    }
+
+    const out: any[] = [];
+    if (left) out.push(this.run(left, roman));
+    out.push(...children);
+    if (right) out.push(this.run(right, roman));
+    return out;
+  }
+
+  private mapSymbol(latexCmd: string, roman: boolean): any {
     if (!latexCmd.startsWith("\\")) {
-      return new this.docx.MathRun(latexCmd);
+      return this.run(latexCmd, roman);
     }
 
-    // Special Large Operators: Use Unicode for compatibility with limits (sub/sup).
-    // These are extensible—contributors can add more (e.g., via PR) for common ops.
-    // Word handles vertical stretching and limit positioning automatically in math mode.
-    const largeOperatorsMap: Record<string, string> = {
-      "\\sum": "∑",
-      "\\int": "∫",
-      "\\prod": "∏",
-      "\\oint": "∮", // Contour integral (new)
-      "\\iint": "∬", // Double integral (new)
-      "\\iiint": "∭", // Triple integral (new)
-      "\\bigcup": "⋃", // Big union (new)
-      "\\bigcap": "⋂", // Big intersection (new)
-      "\\bigvee": "⋁", // Big logical or (new)
-      "\\bigwedge": "⋀", // Big logical and (new)
-      "\\coprod": "∐", // Coproduct (new)
-    };
-    if (largeOperatorsMap[latexCmd]) {
-      return new this.docx.MathRun(largeOperatorsMap[latexCmd]);
+    const mapped = resolveSymbol(latexCmd);
+    if (mapped !== undefined) {
+      return this.run(mapped, roman);
     }
 
-    // Common Symbols Map: Organized by category for easier contributions.
-    // Add new entries here for Unicode mappings. If a symbol has variants (e.g., \varepsilon vs \epsilon),
-    // prioritize the most common. For contributions: Test rendering in Word to ensure proper display.
-    const symbolsMap: Record<string, string> = {
-      // --- Calculus ---
-      "\\partial": "∂",
-      "\\nabla": "∇",
-      "\\infty": "∞",
-      "\\Delta": "Δ",
-      "\\delta": "δ",
-      "\\lim": "lim",
-
-      // --- Operators ---
-      "\\cdot": "⋅",
-      "\\times": "×",
-      "\\approx": "≈",
-      "\\ne": "≠",
-      "\\le": "≤",
-      "\\ge": "≥",
-      "\\pm": "±",
-      "\\rightarrow": "→",
-      "\\leftrightarrow": "↔",
-      "\\equiv": "≡",
-      "\\sim": "∼",
-      "\\propto": "∝",
-      "\\subset": "⊂",
-      "\\subseteq": "⊆",
-      "\\in": "∈",
-      "\\forall": "∀",
-      "\\exists": "∃",
-
-      // --- Greek Lowercase ---
-      "\\alpha": "α",
-      "\\beta": "β",
-      "\\gamma": "γ",
-      "\\epsilon": "ϵ",
-      "\\zeta": "ζ",
-      "\\eta": "η",
-      "\\theta": "θ",
-      "\\lambda": "λ",
-      "\\mu": "μ",
-      "\\nu": "ν",
-      "\\xi": "ξ",
-      "\\pi": "π",
-      "\\rho": "ρ",
-      "\\sigma": "σ",
-      "\\tau": "τ",
-      "\\phi": "ϕ",
-      "\\chi": "χ",
-      "\\psi": "ψ",
-      "\\omega": "ω",
-
-      // --- Greek Uppercase ---
-      "\\Gamma": "Γ",
-      "\\Theta": "Θ",
-      "\\Lambda": "Λ",
-      "\\Xi": "Ξ",
-      "\\Pi": "Π",
-      "\\Sigma": "Σ",
-      "\\Phi": "Φ",
-      "\\Psi": "Ψ",
-      "\\Omega": "Ω",
-    };
-    if (symbolsMap[latexCmd]) {
-      return new this.docx.MathRun(symbolsMap[latexCmd]);
-    }
-
-    // TODO: Expand maps above to reduce fallbacks. In dev, could console.warn(`Unmapped LaTeX: ${latexCmd}`);
-    // Fallback: For unmapped commands, render as text without backslash.
-    return new this.docx.MathRun(latexCmd.replace("\\", ""));
+    return this.run(latexCmd.replace("\\", ""), roman);
   }
 }

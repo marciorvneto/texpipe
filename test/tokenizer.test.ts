@@ -122,23 +122,20 @@ describe("TexPipe Core", () => {
     const ast = new LatexParser("x_i^2").parse();
 
     const node = ast.children?.[0];
-    expect(node?.type).toBe("superscript");
+    expect(node?.type).toBe("scripts");
+    expect(node?.base).toMatchObject({ type: "text", value: "x" });
+    expect(node?.sub).toMatchObject({ type: "text", value: "i" });
     expect(node?.sup).toMatchObject({ type: "text", value: "2" });
-
-    const sub = node?.base;
-    expect(sub?.type).toBe("subscript");
-    expect(sub?.base).toMatchObject({ type: "text", value: "x" });
-    expect(sub?.sub).toMatchObject({ type: "text", value: "i" });
   });
 
   it("does NOT let script arguments eat subsequent scripts (regression)", () => {
-    // This is exactly the bug you had:
-    // x_i^2 incorrectly became subscript(x, superscript(i,2))
+    // x_i^2 must NOT become subscript(x, superscript(i,2))
     const ast = new LatexParser("x_i^2").parse();
     const top = ast.children?.[0];
-    expect(top?.type).toBe("superscript");
-    expect(top?.base?.type).toBe("subscript");
-    expect(top?.base?.sub?.type).toBe("text"); // important: sub is 'i', not superscript(...)
+    expect(top?.type).toBe("scripts");
+    expect(top?.sub?.type).toBe("text");
+    expect(top?.sub).toMatchObject({ type: "text", value: "i" });
+    expect(top?.sup).toMatchObject({ type: "text", value: "2" });
   });
 
   it("handles grouped subscripts (x_{i+1})", () => {
@@ -159,38 +156,30 @@ describe("TexPipe Core", () => {
   it("parses definite integrals (\\int_a^b)", () => {
     const ast = new LatexParser("\\int_a^b").parse();
 
-    const sup = ast.children?.[0];
-    expect(sup?.type).toBe("superscript");
-    expect(sup?.sup).toMatchObject({ type: "text", value: "b" });
-
-    const sub = sup?.base;
-    expect(sub?.type).toBe("subscript");
-    expect(sub?.sub).toMatchObject({ type: "text", value: "a" });
-
-    expect(sub?.base).toMatchObject({ type: "symbol", value: "\\int" });
+    const node = ast.children?.[0];
+    expect(node?.type).toBe("nary");
+    expect(node?.value).toBe("\\int");
+    expect(node?.sub).toMatchObject({ type: "text", value: "a" });
+    expect(node?.sup).toMatchObject({ type: "text", value: "b" });
   });
 
   it("parses summation with limits (\\sum_{n=0}^{\\infty})", () => {
     const ast = new LatexParser("\\sum_{n=0}^{\\infty}").parse();
 
-    const sup = ast.children?.[0];
-    expect(sup?.type).toBe("superscript");
+    const node = ast.children?.[0];
+    expect(node?.type).toBe("nary");
+    expect(node?.value).toBe("\\sum");
 
-    const sub = sup?.base;
-    expect(sub?.type).toBe("subscript");
-    expect(sub?.base).toMatchObject({ type: "symbol", value: "\\sum" });
-
-    // lower limit group contains n, =, 0
-    expect(sub?.sub?.type).toBe("group");
-    expect(sub?.sub?.children?.[0]).toMatchObject({ type: "text", value: "n" });
-    expect(sub?.sub?.children?.[1]).toMatchObject({
+    expect(node?.sub?.type).toBe("group");
+    expect(node?.sub?.children?.[0]).toMatchObject({ type: "text", value: "n" });
+    expect(node?.sub?.children?.[1]).toMatchObject({
       type: "operator",
       value: "=",
     });
-    expect(sub?.sub?.children?.[2]).toMatchObject({ type: "text", value: "0" });
+    expect(node?.sub?.children?.[2]).toMatchObject({ type: "text", value: "0" });
 
-    expect(sup?.sup?.type).toBe("group");
-    expect(sup?.sup?.children?.[0]).toMatchObject({
+    expect(node?.sup?.type).toBe("group");
+    expect(node?.sup?.children?.[0]).toMatchObject({
       type: "symbol",
       value: "\\infty",
     });
@@ -224,5 +213,19 @@ describe("TexPipe Docx Adapter", () => {
     const paragraph = adapter.toParagraph("\\alpha+\\beta");
     expect(JSON.stringify(paragraph)).toContain("α");
     expect(JSON.stringify(paragraph)).toContain("β");
+  });
+
+  it("emits a radical for \\sqrt", () => {
+    const adapter = new DocxAdapter(docx);
+    const math = adapter.toMath("\\sqrt{x}");
+    expect(JSON.stringify(math)).toContain("m:rad");
+  });
+
+  it("emits stretchy parens for \\left(...\\right)", () => {
+    const adapter = new DocxAdapter(docx);
+    const math = adapter.toMath("\\left(\\frac{a}{b}\\right)");
+    expect(JSON.stringify(math)).toContain("m:d");
+    expect(JSON.stringify(math)).not.toContain("left");
+    expect(JSON.stringify(math)).not.toContain("right");
   });
 });
